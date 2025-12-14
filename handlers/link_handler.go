@@ -17,6 +17,11 @@ type CreateLinkInput struct {
 	CustomCode  string `json:"custom_code,omitempty"` // opsional
 }
 
+type UpdateLinkInput struct {
+	OriginalURL string `json:"original_url" binding:"required,url"`
+	CustomCode  string `json:"custom_code"` // Field baru (opsional)
+}
+
 // CreateShortLink membuat link pendek baru
 func CreateShortLink(c *gin.Context) {
 	var input CreateLinkInput
@@ -96,20 +101,42 @@ func UpdateLink(c *gin.Context) {
 	userID, _ := c.Get("userID")
 	linkID := c.Param("id")
 
+	// Cari link di database
 	var link models.Shortener
 	if err := database.DB.Where("id = ? AND user_id = ?", linkID, userID).First(&link).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Link tidak ditemukan atau Anda tidak punya akses"})
 		return
 	}
 
+	// Bind JSON input
 	var input UpdateLinkInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
+	// Selalu update URL asli
 	link.OriginalURL = input.OriginalURL
-	database.DB.Save(&link)
+
+	// Cek apakah user ingin mengubah Custom URL (Short Code)
+	if input.CustomCode != "" && input.CustomCode != link.ShortCode {
+		// Cek apakah custom code baru sudah dipakai orang lain?
+		var existing models.Shortener
+		if err := database.DB.Where("short_code = ?", input.CustomCode).First(&existing).Error; err == nil {
+			// Jika err == nil, berarti ketemu (sudah ada yang pakai)
+			c.JSON(http.StatusConflict, gin.H{"error": "Custom link ini sudah dipakai, cari yang lain"})
+			return
+		}
+		
+		// Jika aman, update short code
+		link.ShortCode = input.CustomCode
+	}
+
+	// Simpan perubahan ke DB
+	if err := database.DB.Save(&link).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Gagal mengupdate link"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Link berhasil diupdate", "data": link})
 }
